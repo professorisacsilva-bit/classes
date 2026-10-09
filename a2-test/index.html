@@ -678,6 +678,14 @@ function renderResults() {
     '<div class="row"><span class="big">' + ap.got + " / " + ap.max + '</span><span class="muted">correct answers in the parts marked automatically (' + ap.pct + "%)</span></div>" +
     '<p class="note noprint" style="margin:0"><strong>Take a screenshot of this page and send it to your teacher.</strong> Scroll down and take more screenshots to include your answers.</p></div>';
 
+  /* send to teacher */
+  const nRec = Object.keys(S.recs).length;
+  html += '<div class="card stack noprint" style="margin-top:18px"><div><h2>Send your test to your teacher</h2>' +
+    '<p style="margin:0">Your teacher needs your report' + (nRec ? " and your " + nRec + " recording" + (nRec > 1 ? "s" : "") : "") + ". Tap the button, then choose WhatsApp, email or the app your teacher asked you to use.</p></div>" +
+    '<div class="row"><button id="share" type="button">Send to my teacher</button></div>' +
+    '<p id="sharemsg" class="note" role="status" style="margin:0"></p>' +
+    '<details><summary class="note">The button does not work? Download the files</summary><div class="stack" style="margin-top:12px" id="dl"></div></details></div>';
+
   /* answers, grouped by section */
   html += '<div class="card" style="margin-top:18px"><h2>Your answers</h2>';
   SECTIONS.forEach(s => {
@@ -723,6 +731,7 @@ function renderResults() {
   app.innerHTML = html;
 
   app.querySelectorAll("select[data-q]").forEach(sel => sel.onchange = () => { S.teacher[sel.dataset.q] = sel.value; drawSummary(); });
+  wireShare();
   document.getElementById("copy").onclick = copyReport;
   document.getElementById("print").onclick = () => window.print();
   document.getElementById("again").onclick = () => {
@@ -751,17 +760,72 @@ function drawSummary() {
 }
 
 function reportText() {
-  const o = overall();
-  const lines = ["A2 ENGLISH ASSESSMENT", "Student: " + S.student, ""];
-  SECTIONS.forEach(s => { const r = skillScore(s.id); lines.push(s.name + ": " + (r.pending ? "not scored yet" : r.got + "/" + r.max)); });
-  lines.push("", "Total: " + (o.pending ? "pending" : o.got + "/" + o.max + " (" + o.pct + "%) - " + levelFor(o.pct)), "");
+  const ap = autoPart();
+  const L = ["A2 ENGLISH ASSESSMENT", "Student: " + S.student, "Date: " + new Date().toLocaleString("en-GB"), ""];
+  SECTIONS.forEach(s => {
+    if (isAutoSection(s.id)) { const r = skillScore(s.id); L.push(s.name + ": " + r.got + "/" + r.max); }
+  });
+  L.push("Automatic total: " + ap.got + "/" + ap.max + " (" + ap.pct + "%)", "");
+  SECTIONS.forEach(s => {
+    if (!isAutoSection(s.id)) return;
+    L.push("--- " + s.name.toUpperCase() + " ---");
+    QUESTIONS.filter(q => q.section === s.id).forEach((q, i) => {
+      L.push((i + 1) + ". " + q.prompt, "   Answer: " + answerText(q) + " - " + (autoCorrect(q) ? "Correct" : "Incorrect"));
+    });
+    L.push("");
+  });
   QUESTIONS.filter(q => q.type === "open").forEach(q => {
-    lines.push("[" + q.id + "] " + q.prompt, "Answer: " + (S.answers[q.id] || "-"), "Score: " + (S.teacher[q.id] === undefined || S.teacher[q.id] === "" ? "-" : S.teacher[q.id] + "/" + TEACHER_MAX), "");
+    const t = S.teacher[q.id];
+    L.push("--- WRITING [" + q.id + "] ---", q.prompt, "Answer: " + answerText(q), "Words: " + countWords(S.answers[q.id] || ""), "Teacher score: " + (t === undefined || t === "" ? "-" : t + "/" + TEACHER_MAX), "");
   });
   QUESTIONS.filter(q => q.type === "record").forEach(q => {
-    lines.push("[" + q.id + "] " + q.prompt, "Recording: " + (S.recs[q.id] ? "yes, " + fmt(S.recs[q.id].dur) : "none"), "Score: " + (S.teacher[q.id] === undefined || S.teacher[q.id] === "" ? "-" : S.teacher[q.id] + "/" + TEACHER_MAX), "");
+    const t = S.teacher[q.id];
+    L.push("--- SPEAKING [" + q.id + "] ---", q.prompt, "Recording: " + (S.recs[q.id] ? "yes, " + fmt(S.recs[q.id].dur) : "none"), "Teacher score: " + (t === undefined || t === "" ? "-" : t + "/" + TEACHER_MAX), "");
   });
-  return lines.join("\n");
+  return L.join("\n");
+}
+
+function safeName() { return (S.student || "student").trim().replace(/[^A-Za-z0-9À-ɏ]+/g, "_").replace(/^_+|_+$/g, "") || "student"; }
+function recExt(type) { return /mp4|aac|m4a/i.test(type) ? "m4a" : /ogg/i.test(type) ? "ogg" : /webm/i.test(type) ? "webm" : "audio"; }
+function buildFiles() {
+  const n = safeName(), files = [];
+  files.push(new File([reportText()], n + "_report.txt", { type: "text/plain" }));
+  QUESTIONS.filter(q => q.type === "record" && S.recs[q.id]).forEach((q, i) => {
+    const r = S.recs[q.id], type = (r.blob.type || "audio/webm").split(";")[0];
+    files.push(new File([r.blob], n + "_speaking_" + (i + 1) + "." + recExt(type), { type }));
+  });
+  return files;
+}
+function wireShare() {
+  const btn = document.getElementById("share"), msg = document.getElementById("sharemsg"), dl = document.getElementById("dl");
+  const files = buildFiles();
+  dl.innerHTML = "";
+  files.forEach(f => {
+    const url = URL.createObjectURL(f);
+    const a = document.createElement("a");
+    a.href = url; a.download = f.name; a.textContent = "Download " + f.name;
+    a.style.cssText = "display:block;padding:12px 14px;border:2px solid var(--accent);border-radius:10px;color:var(--accent);font-weight:700;text-decoration:none;word-break:break-all";
+    dl.appendChild(a);
+  });
+  btn.onclick = async () => {
+    msg.classList.remove("err");
+    const data = { files, title: "A2 English test - " + S.student, text: "A2 English test - " + S.student };
+    try {
+      if (navigator.canShare && navigator.canShare(data)) {
+        await navigator.share(data);
+        msg.textContent = "Done. Check that your teacher received everything.";
+      } else {
+        msg.textContent = "Sharing is not available on this device. Open the box below and download the files, then send them to your teacher.";
+        msg.classList.add("err");
+        btn.closest(".card").querySelector("details").open = true;
+      }
+    } catch (e) {
+      if (e && e.name === "AbortError") { msg.textContent = "Sending was cancelled. Tap the button to try again."; return; }
+      msg.textContent = "Could not share. Open the box below and download the files.";
+      msg.classList.add("err");
+      btn.closest(".card").querySelector("details").open = true;
+    }
+  };
 }
 
 async function copyReport() {
